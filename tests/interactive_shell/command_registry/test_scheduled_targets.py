@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 from prompt_toolkit.application import create_app_session
+from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
@@ -24,6 +25,8 @@ from surfaces.interactive_shell.command_registry import (
 )
 from surfaces.interactive_shell.runtime import input_policy
 from surfaces.interactive_shell.session import Session
+from surfaces.interactive_shell.ui import scheduled_target
+from surfaces.interactive_shell.ui.scheduled_target import build_scheduled_task_picker
 
 
 @pytest.fixture(autouse=True)
@@ -82,6 +85,96 @@ def seed_tasks() -> tuple[ScheduledTask, ScheduledTask, ScheduledTask]:
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps([task.model_dump(mode="json") for task in tasks]))
     return tasks
+
+
+@pytest.mark.parametrize(("columns", "rows"), [(40, 12), (40, 24), (90, 30)])
+def test_scheduled_picker_review_preserves_full_identity_and_timezone(
+    columns: int, rows: int
+) -> None:
+    class SizedOutput(DummyOutput):
+        def get_size(self) -> Size:
+            return Size(rows=rows, columns=columns)
+
+    task = ScheduledTask(
+        id="12345678-1234-1234-1234-123456789012",
+        name="Payments [literal] 日本 digest",
+        kind=TaskKind.SENTRY_MORNING_DIGEST,
+        cron="0 8 * * mon-fri",
+        timezone="Asia/Kolkata",
+        provider=Provider.SLACK,
+        chat_id="C-payments",
+    )
+    captured: list[str] = []
+    with create_pipe_input() as pipe, create_app_session(output=SizedOutput()):
+        app = build_scheduled_task_picker(
+            [task],
+            command="/sentry digest schedule run",
+            action_label="Run now",
+            confirmation="Run this scheduled task now with its configured delivery?",
+            compact_confirmation="Run with configured delivery?",
+        )
+        app.input = pipe
+
+        def capture(_app: Any) -> None:
+            screen = app.renderer.last_rendered_screen
+            if screen is None or captured:
+                return
+            lines = [
+                "".join(screen.data_buffer[y][x].char for x in range(columns))
+                for y in range(screen.height)
+            ]
+            if not any("Cancel" in line for line in lines):
+                return
+            captured.extend(lines)
+            pipe.send_text("\x03")
+
+        app.after_render += capture
+        assert app.run(pre_run=lambda: pipe.send_text("\r")) is None
+
+    content = "".join(line.strip(" │") for line in captured)
+    assert task.id in content
+    assert "<id>" not in content
+    assert task.timezone in content
+    assert "[literal]" in content and "日本" in content
+    assert "› Run now" in content and "Cancel" in content
+
+
+def test_scheduled_picker_keeps_full_id_outside_summary_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = ScheduledTask(
+        id="full-task-id-that-must-not-affect-summary-column-widths",
+        name="Payments digest",
+        kind=TaskKind.SENTRY_MORNING_DIGEST,
+        cron="0 8 * * mon-fri",
+        timezone="Europe/London",
+        provider=Provider.SLACK,
+        chat_id="C-payments",
+    )
+    captured: dict[str, Any] = {}
+
+    def build(choices: Any, **kwargs: Any) -> Any:
+        captured["choices"] = choices
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(scheduled_target, "build_target_picker", build)
+    scheduled_target.build_scheduled_task_picker(
+        [task],
+        command="/sentry digest schedule remove",
+        action_label="Remove permanently",
+    )
+
+    choice = captured["choices"][0]
+    assert [column.header for column in captured["columns"]] == [
+        "Task",
+        "Destination",
+        "Schedule",
+        "TZ",
+        "State",
+    ]
+    assert len(choice.cells) == 4
+    assert choice.metadata[0].plain == f"Full task ID: {task.id}"
 
 
 @pytest.mark.parametrize(

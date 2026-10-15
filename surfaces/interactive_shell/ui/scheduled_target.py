@@ -20,7 +20,6 @@ def _task_title(task: ScheduledTask) -> str:
 
 def _task_details(task: ScheduledTask) -> tuple[str, ...]:
     details = [
-        f"Task ID: {task.id}",
         f"Destination: {task.provider.value}:{task.chat_id or 'default'}",
         f"Schedule: {task.cron} · TZ {task.timezone}",
     ]
@@ -70,9 +69,10 @@ def build_scheduled_task_picker(
                 )
             ),
             summary_style="description" if task.enabled else "warning",
-            compact_summary=f"{task.provider.value}:{task.chat_id or 'default'} · {task.cron}",
-            compact_details=(f"Full task ID: {task.id}",),
-            minimal_details=("Full task ID: <id>",),
+            compact_summary=(
+                f"{task.provider.value}:{task.chat_id or 'default'} · "
+                f"{task.cron} · TZ {task.timezone}"
+            ),
             cells=(
                 Text(
                     f"{task.provider.value}:{task.chat_id or 'default'}",
@@ -84,8 +84,8 @@ def build_scheduled_task_picker(
                     "Active" if task.enabled else "Paused",
                     style=str(HIGHLIGHT if task.enabled else WARNING),
                 ),
-                Text(task.display_id(), style=str(DIM)),
             ),
+            metadata=(Text(f"Full task ID: {task.id}", style=str(DIM)),),
         )
         for task in tasks
     )
@@ -102,7 +102,6 @@ def build_scheduled_task_picker(
             RecordColumn("Schedule"),
             RecordColumn("TZ"),
             RecordColumn("State"),
-            RecordColumn("ID"),
         ),
         fit_columns=True,
     )
